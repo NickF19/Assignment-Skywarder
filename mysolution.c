@@ -3,12 +3,14 @@
 // Assumptions:
 //      Calibration : we assume that the update function will be called for some steps before the liftoff
 //      Lift-off :  we assume that the liftoff will happen at the moment of the first and huge delta acceleration.
-//      Apogee :    we assume to be the point when the barometer reaches the maximum value.
+//      Apogee :    we assume to be the point when the barometer reaches a minimum barometric pressure.
+//                  we search for the point in which the mean of the barometric pressure returns to increase.
+//                  the apogee is the first (local) minima, considering mean values, of the barometric pressure plot.
 //      Landing :   we assume that the landing is when the barometer, the acceleration and gyros stabilize
 //                  also, it can be assumed that a "spike" on acceleration due to touch-down is detectable.
 //                  here we consider "landing" when the vector is stopped, not when it touches-down.
 //      Sensors:    The sensor variance/error is considered, while it is not taken any cleaning procedure for outliers.
-//                  Therefore, for now, outliers may trigger liftoff and apogee
+//                  Therefore, for now, outliers may trigger liftoff and apogee detection.
 
 #include <stdio.h>
 #include <stdbool.h>
@@ -17,16 +19,14 @@
 
 // Nr. of samples used for calibration phase (compute variance of the sensors)
 #define N_CAL 20
-// Nr. of samples used
-#define N_AVG 5
-// Parameter to decide how if a sample is off the precedent mean.
+// Multiplier of the variance to detect values that differ from the mean values considering the error.
 #define N_OFF 5
-// Nr. of barometric readings for apogee detection via considering mean value
+// Nr. of barometric readings for apogee detection via considering mean value of the samples "sliding window"
 #define N_BARO 6
-// Multiplier for the landing variance, for stabilized rocket detection
+// Multiplier for the landing variance/sensor error, for stabilized rocket detection.
 #define LANDING_VAR 2
 
-// --- GLOBAL VARIABLES ---
+//  --- GLOBAL VARIABLES ---
 
 // Samples data structure
 typedef struct{
@@ -38,16 +38,16 @@ typedef struct{
     float gyro_z;
     float baro;
 }sample_t;
-// Variance of the samples - sensor variance
+// Variance of the samples - sensor variance/error
 sample_t variance;
-// Mean of the reads - initial state means for calibration and liftoff detection
+// Mean of the reads - initial state means for calibration, liftoff detection and then landing detection
 sample_t mean_reads;
 
 // Typedef for the phases of the launch
-typedef enum {CALIBRATION, PRE_LAUNCH, LIFTOFF, ENGINE_OFF, APOGEE_REACHED, PARACHUTE_DEPLOYED, LANDED} phase_t;
+typedef enum {CALIBRATION, PRE_LAUNCH, LIFTOFF, APOGEE_REACHED, LANDED} phase_t;
 phase_t phase;
 
-// Indicates that the calibration is in course
+// Indicates that the calibration process is in course
 bool calibration_phase;
 
 // Indicates that we are observing the first sample
@@ -60,13 +60,15 @@ bool stable;
 // NR. of sample used / counter
 long int samples = 1;
 
-// N baro samples for the APOGEE detection.
+// N baro samples for the APOGEE detection. 2 sliding window arrays for older and newer samples 
 float old_baro_samples [N_BARO], new_baro_samples [N_BARO];
 float new_baro_mean;
 int baro_steps;
 
-// Helper function to compute the barometric pressures arrays and means for apogee detection
-void baro_means(float baro){
+//  --- FUNCTIONS ---
+
+// Helper function to update the barometric pressures arrays and means for apogee detection
+void baro_means_update(float baro){
     int old_baro_sum=0;
     int new_baro_sum=0;
     for(int i = 0; i<N_BARO-1; i++){
@@ -90,7 +92,7 @@ void acc_gyro_means_update(float acc_x, float acc_y, float acc_z, float gyro_x, 
                            float gyro_z)
 {
     // We use an incremental mean method with "learning rate" to forget past mean.
-    // This is could be implemented as the barometer, with a sliding window of samples.
+    // This could also have been implemented as the barometer, with a sliding window of samples.
     mean_reads.acc_x = 0.25*acc_x + 0.75*mean_reads.acc_x;
     mean_reads.acc_y = 0.25*acc_y + 0.75*mean_reads.acc_y;
     mean_reads.acc_z = 0.25*acc_z + 0.75*mean_reads.acc_z;
@@ -121,6 +123,7 @@ void init() {
     baro_steps = 0;
 }
 
+// Update function called at each new sample
 void update (float acc_x, float acc_y, float acc_z, float gyro_x, float gyro_y,
             float gyro_z, float baro)
 {
@@ -195,33 +198,27 @@ void update (float acc_x, float acc_y, float acc_z, float gyro_x, float gyro_y,
                     liftoff();
                     phase = LIFTOFF;
                 }
-                baro_means(baro);
+                baro_means_update(baro);
                 break;
 
             case LIFTOFF:
                 // To compute the apogee, we use two "samples window" the old one and the new one
                 // By comparing the two windows, we can see if there is a clear increase of the barometric pressure
                 // Computing the mean value for the last N_BARO samples
-                baro_means(baro);
+                baro_means_update(baro);
                 acc_gyro_means_update(acc_x,acc_y,acc_z,gyro_x,gyro_y,gyro_z);
+                // If the newer mean is increasing, then we have reached the minimum barometric pressure (apogee)
                 if(new_baro_mean > mean_reads.baro + N_OFF*variance.baro)
                 {
                     printf("\n%ld - APOGEE REACHED\n", samples);
-                    printf("\nAPOGEE MEAN BAROMETRIC PRESSURE: %2f\n", mean_reads.baro);
-                    for (int i=0;i<N_BARO;i++){
-                        printf("\n old samples for mean: %2f", old_baro_samples[i]);
-                    }
-                    for (int i=0;i<N_BARO;i++){
-                        printf("\n new samples for mean: %2f", new_baro_samples[i]);
-                    }
-                    printf("\n old mean:%2f\n", mean_reads.baro);
-                    printf("\n new mean:%2f\n", new_baro_mean);
+                    printf("\nAPOGEE MEAN BAROMETRIC PRESSURE: %.2f\n", mean_reads.baro);
                     apogee();
                     phase = APOGEE_REACHED;
                     break;
                 }
                 break;
             case APOGEE_REACHED:
+                // Compute the stable flag, 1 if all the sensors are stable (samples within the mean +/- the noise)
                 stable = 1;
                 stable *= (fabs(acc_x-mean_reads.acc_x) < variance.acc_x*LANDING_VAR);
                 stable *= (fabs(acc_y-mean_reads.acc_y) < variance.acc_y*LANDING_VAR);
@@ -237,11 +234,13 @@ void update (float acc_x, float acc_y, float acc_z, float gyro_x, float gyro_y,
                     phase = LANDED;
                     landed();
                 }
+                // Updates the observed sensor sample means
                 acc_gyro_means_update(acc_x,acc_y,acc_z,gyro_x,gyro_y,gyro_z);
-                baro_means(baro);
+                baro_means_update(baro);
+
                 break;
+
             case LANDED:
-                return;
                 break;
 
             default:
