@@ -1,5 +1,10 @@
 # Skyward Software Development Assignment (2023-09)
 
+The assignment has been solved in the mysolution.c file with the compiled version, using the grader as main.o
+There are some graphics about the data for better understand the three phases characteristics and sensors data behavior. 
+
+# Assignment text
+
 Your task is to develop a simple program that mimics the main task of the flight software, detecting liftoff, apogee and landing events.
 
 The structure is simple, the provided `grader.c` contains the actual main. It parses a csv file to read flight data, and calls first an `init()` funtion and then an `update()` function.
