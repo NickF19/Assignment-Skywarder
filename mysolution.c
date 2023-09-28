@@ -20,6 +20,8 @@
 #define N_AVG 5
 // Parameter to decide how if a sample is off the precedent mean.
 #define N_OFF 5
+// Nr. of barometric readings for apogee detection via considering mean value
+#define N_BARO 6
 
 // --- GLOBAL VARIABLES ---
 
@@ -51,6 +53,31 @@ bool first_read;
 // NR. of sample used / counter
 long int samples = 1;
 
+// N baro samples for the APOGEE detection.
+float old_baro_samples [N_BARO], new_baro_samples [N_BARO];
+float new_baro_mean;
+int baro_steps;
+
+// Helper function to compute the barometric pressures arrays and means for apogee detection
+void baro_means(float baro){
+    int old_baro_sum=0;
+    int new_baro_sum=0;
+    for(int i = 0; i<N_BARO-1; i++){
+        old_baro_samples[i] = old_baro_samples[i+1];
+        old_baro_sum+=old_baro_samples[i];
+    }
+    old_baro_samples[N_BARO-1] = new_baro_samples[0];
+    old_baro_sum += old_baro_samples[N_BARO-1];
+    for(int i = 0; i<N_BARO-1; i++){
+        new_baro_samples[i] = new_baro_samples[i+1];
+        new_baro_sum+=new_baro_samples[i];
+    }
+    new_baro_samples[N_BARO-1] = baro;
+    new_baro_sum+=baro;
+    mean_reads.baro = old_baro_sum/N_BARO;
+    new_baro_mean = new_baro_sum/N_BARO;
+}
+
 // INIT - initializes flags and initial values.
 void init() {
     first_read = 1;
@@ -70,6 +97,7 @@ void init() {
     variance.gyro_y = 0;
     variance.gyro_z = 0;
     variance.baro = 0;
+    baro_steps = 0;
 }
 
 void update (float acc_x, float acc_y, float acc_z, float gyro_x, float gyro_y,
@@ -128,6 +156,12 @@ void update (float acc_x, float acc_y, float acc_z, float gyro_x, float gyro_y,
                         printf("Sensor variance found: acc_x %2f, acc_y %2f, acc_z %2f, gyro_x %2f, gyro_y %2f, "
                                "gyro_z %2f, baro %2f \n", variance.acc_x, variance.acc_y, variance.acc_z,
                                variance.gyro_x, variance.gyro_y, variance.gyro_z, variance.baro);
+                        // Initialize barometric samples as mean vector
+                        for (int i=0; i<N_BARO;i++)
+                        {
+                            old_baro_samples[i] = mean_reads.baro;
+                            new_baro_samples[i] = mean_reads.baro;
+                        }
                     }
                 }
                 break;
@@ -139,18 +173,41 @@ void update (float acc_x, float acc_y, float acc_z, float gyro_x, float gyro_y,
                     printf("\n%ld - LIFTOFF\n", samples);
                     liftoff();
                     phase = LIFTOFF;
-                    return;
                 }
+                baro_means(baro);
                 break;
 
-                //TODO: complete the implementation from this point on
             case LIFTOFF:
-
+                // TODO: NON-IMPLEMENTED PHASE
+                printf("\nENGINE OFF");
                 phase = ENGINE_OFF;
                 break;
             case ENGINE_OFF:
+                // To compute the apogee, we use two "samples window" the old one and the new one
+                // By comparing the two windows, we can see if there is a clear increase of the barometric pressure
+                // Computing the mean value for the last N_BARO samples
+                baro_means(baro);
+                printf("\nUpdating baro mean %2f\n",mean_reads.baro);
+                if(new_baro_mean > mean_reads.baro + N_OFF*variance.baro)
+                {
+                    printf("\n%ld - APOGEE REACHED\n", samples);
+                    printf("\nAPOGEE MEAN BAROMETRIC PRESSURE: %2f\n", mean_reads.baro);
+                    for (int i=0;i<N_BARO;i++){
+                        printf("\n old samples for mean: %2f", old_baro_samples[i]);
+                    }
+                    for (int i=0;i<N_BARO;i++){
+                        printf("\n new samples for mean: %2f", new_baro_samples[i]);
+                    }
+                    printf("\n old mean:%2f\n", mean_reads.baro);
+                    printf("\n new mean:%2f\n", new_baro_mean);
+
+                    apogee();
+                    phase = APOGEE_REACHED;
+                    break;
+                }
                 break;
             case APOGEE_REACHED:
+                return;
                 break;
             case PARACHUTE_DEPLOYED:
                 break;
